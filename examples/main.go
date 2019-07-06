@@ -39,12 +39,30 @@ func myFunc(i interface{}) {
 	fmt.Printf("run with %d\n", n)
 }
 
-func demoFunc() {
-	time.Sleep(10 * time.Millisecond)
-	fmt.Println("Hello World!")
+func demoFunc(stringA string) {
+	time.Sleep(2000 * time.Millisecond)
+	fmt.Println(stringA)
 }
 
-func main() {
+func demoNewPool() {
+	runTimes := 10
+	p, _ := ants.NewPool(2)
+	defer p.Release()
+
+	var wg sync.WaitGroup
+
+	for i := 0; i < runTimes; i++ {
+		wg.Add(1)
+		err := p.Submit(func() {
+			demoFunc("Holle ")
+			wg.Done()
+		})
+		fmt.Println(err)
+	}
+	wg.Wait()
+}
+
+func demo() {
 	defer ants.Release()
 
 	runTimes := 1000
@@ -52,7 +70,7 @@ func main() {
 	// Use the common pool.
 	var wg sync.WaitGroup
 	syncCalculateSum := func() {
-		demoFunc()
+		//demoFunc()
 		wg.Done()
 	}
 	for i := 0; i < runTimes; i++ {
@@ -78,4 +96,8 @@ func main() {
 	wg.Wait()
 	fmt.Printf("running goroutines: %d\n", p.Running())
 	fmt.Printf("finish all tasks, result is %d\n", sum)
+}
+
+func main() {
+	demoNewPool()
 }

@@ -1,25 +1,3 @@
-// MIT License
-
-// Copyright (c) 2018 Andy Pan
-
-// Permission is hereby granted, free of charge, to any person obtaining a copy
-// of this software and associated documentation files (the "Software"), to deal
-// in the Software without restriction, including without limitation the rights
-// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-// copies of the Software, and to permit persons to whom the Software is
-// furnished to do so, subject to the following conditions:
-//
-// The above copyright notice and this permission notice shall be included in all
-// copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-// SOFTWARE.
-
 package ants
 
 import (
@@ -31,29 +9,22 @@ import (
 // Pool accept the tasks from client,it limits the total
 // of goroutines to a given number by recycling goroutines.
 type Pool struct {
-	// capacity of the pool.
-	capacity int32
+	capacity       int32         //线程数量
+	running        int32         //正在运行的线程数量
+	expiryDuration time.Duration //定时清除过期协程时间
 
-	// running is the number of the currently running goroutines.
-	running int32
-
-	// expiryDuration set the expired time (second) of every worker.
-	expiryDuration time.Duration
-
-	// workers is a slice that store the available workers.
-	workers []*Worker
+	workers []*Worker //这里是存储有用的work结构体 work最大数量等于capacity
 
 	// release is used to notice the pool to closed itself.
-	release int32
+	release int32 //关闭协程标志
 
 	// lock for synchronous operation.
-	lock sync.Mutex
+	lock sync.Mutex //主要是控制workers
 
 	// cond for waiting to get a idle worker.
-	cond *sync.Cond
+	cond *sync.Cond //
 
-	// once makes sure releasing this pool will just be done for one time.
-	once sync.Once
+	once sync.Once //释放线程池实例的时候保证只执行一次
 
 	// workerCache speeds up the obtainment of the an usable worker in function:retrieveWorker.
 	workerCache sync.Pool
@@ -63,13 +34,13 @@ type Pool struct {
 	PanicHandler func(interface{})
 }
 
-// Clear expired workers periodically.
+// 定期清理过期的work. 退出等待执行任务的work协程并把work设置为nil
 func (p *Pool) periodicallyPurge() {
 	heartbeat := time.NewTicker(p.expiryDuration)
-	defer heartbeat.Stop()
+	defer heartbeat.Stop() //记得需要释放timer
 
 	for range heartbeat.C {
-		if CLOSED == atomic.LoadInt32(&p.release) {
+		if CLOSED == atomic.LoadInt32(&p.release) { //p.release是线程池关闭标志
 			break
 		}
 		currentTime := time.Now()
@@ -78,6 +49,7 @@ func (p *Pool) periodicallyPurge() {
 		n := -1
 		for i, w := range idleWorkers {
 			if currentTime.Sub(w.recycleTime) <= p.expiryDuration {
+				//因为work放在最前的是时间最长的.如果第一个都没过期.后面肯定也没过期.所以这里直接break不用继续处理
 				break
 			}
 			n = i
@@ -95,12 +67,10 @@ func (p *Pool) periodicallyPurge() {
 	}
 }
 
-// NewPool generates an instance of ants pool.
 func NewPool(size int) (*Pool, error) {
 	return NewTimingPool(size, DEFAULT_CLEAN_INTERVAL_TIME)
 }
 
-// NewTimingPool generates an instance of ants pool with a custom timed task.
 func NewTimingPool(size, expiry int) (*Pool, error) {
 	if size <= 0 {
 		return nil, ErrInvalidPoolSize
@@ -113,13 +83,12 @@ func NewTimingPool(size, expiry int) (*Pool, error) {
 		expiryDuration: time.Duration(expiry) * time.Second,
 	}
 	p.cond = sync.NewCond(&p.lock)
-	go p.periodicallyPurge()
+	go p.periodicallyPurge() //定时清理过期work
 	return p, nil
 }
 
 //---------------------------------------------------------------------------
 
-// Submit submits a task to this pool.
 func (p *Pool) Submit(task func()) error {
 	if CLOSED == atomic.LoadInt32(&p.release) {
 		return ErrPoolClosed
@@ -128,22 +97,24 @@ func (p *Pool) Submit(task func()) error {
 	return nil
 }
 
-// Running returns the number of the currently running goroutines.
+// 返回正在运行的协程
 func (p *Pool) Running() int {
 	return int(atomic.LoadInt32(&p.running))
 }
 
-// Free returns the available goroutines to work.
+// 返回空闲的协程
 func (p *Pool) Free() int {
 	return int(atomic.LoadInt32(&p.capacity) - atomic.LoadInt32(&p.running))
 }
 
-// Cap returns the capacity of this pool.
+// 返回协程最大容量
 func (p *Pool) Cap() int {
 	return int(atomic.LoadInt32(&p.capacity))
 }
 
-// Tune changes the capacity of this pool.
+// 重置协程容量
+// 如果是扩容直接更改容量字段就好.
+// 如果是缩容.正在执行的数量大于要更改后的数量.需要停掉这之间的差值协程
 func (p *Pool) Tune(size int) {
 	if size == p.Cap() {
 		return
@@ -155,14 +126,14 @@ func (p *Pool) Tune(size int) {
 	}
 }
 
-// Release Closes this pool.
+//释放协程示例
 func (p *Pool) Release() error {
 	p.once.Do(func() {
 		atomic.StoreInt32(&p.release, 1)
 		p.lock.Lock()
 		idleWorkers := p.workers
 		for i, w := range idleWorkers {
-			w.task <- nil
+			w.task <- nil //正在等待任务执行的协程程收到nil信号会退出协程
 			idleWorkers[i] = nil
 		}
 		p.workers = nil
@@ -173,12 +144,12 @@ func (p *Pool) Release() error {
 
 //---------------------------------------------------------------------------
 
-// incRunning increases the number of the currently running goroutines.
+//增加正在运行的协程数量
 func (p *Pool) incRunning() {
 	atomic.AddInt32(&p.running, 1)
 }
 
-// decRunning decreases the number of the currently running goroutines.
+//减少正在运行的协程数量
 func (p *Pool) decRunning() {
 	atomic.AddInt32(&p.running, -1)
 }
@@ -196,17 +167,19 @@ func (p *Pool) retrieveWorker() *Worker {
 		p.workers = idleWorkers[:n]
 		p.lock.Unlock()
 	} else if p.Running() < p.Cap() {
+		//如果正在运行的线程小于设置的线程数量. 则新建work
 		p.lock.Unlock()
 		if cacheWorker := p.workerCache.Get(); cacheWorker != nil {
 			w = cacheWorker.(*Worker)
 		} else {
 			w = &Worker{
 				pool: p,
-				task: make(chan func(), workerChanCap),
+				task: make(chan func(), 1),
 			}
 		}
-		w.run()
+		w.run() //创建协程 协程阻塞在chan里. 等待具体需要执行的任务函数
 	} else {
+		//如果 线程全部跑满 这里阻塞等待有新的线程释放
 		for {
 			p.cond.Wait()
 			l := len(p.workers) - 1

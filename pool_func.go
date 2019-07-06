@@ -206,7 +206,7 @@ func (p *PoolWithFunc) retrieveWorker() *WorkerWithFunc {
 		} else {
 			w = &WorkerWithFunc{
 				pool: p,
-				args: make(chan interface{}, workerChanCap),
+				args: make(chan interface{}, 1),
 			}
 		}
 		w.run()
